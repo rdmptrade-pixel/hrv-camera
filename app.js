@@ -3,6 +3,7 @@ import { CameraRecorder } from './lib/camera.js'
 import { BeatDetector, median } from './lib/signal.js'
 import { buildResult, qualityLabel } from './lib/result.js'
 import { loadHistory, saveToHistory, clearHistory, toCsv } from './lib/history.js'
+import { BAEVSKY } from './lib/baevsky.js'
 
 const APP = {
   MEASURE_MS: 5 * 60 * 1000, // длительность замера — как требует метод
@@ -30,6 +31,31 @@ const fmtDate = (iso) =>
   new Date(iso).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
 const qClass = (q) => 'q-' + q
 
+// Зона по значению ИН — заново по текущей шкале (так раскрашиваются и старые замеры)
+const zoneFor = (si) => (si === null || si === undefined ? null : BAEVSKY.ZONES.find((z) => si <= z.max))
+const dot = (si) => {
+  const z = zoneFor(si)
+  return '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + (z ? z.color : '#777') + ';margin-right:6px"></span>'
+}
+
+// Цветная шкала: шесть равных отрезков с границами 50 · 80 · 150 · 300 · 500, отметка — где ваш ИН
+function scaleHtml(si) {
+  const zones = BAEVSKY.ZONES
+  const seg = 100 / zones.length
+  let pos = null
+  if (si !== null && si !== undefined) {
+    const i = zones.findIndex((z) => si <= z.max)
+    const lo = i ? zones[i - 1].max : 0
+    const hi = Number.isFinite(zones[i].max) ? zones[i].max : 1000
+    pos = (i + Math.min(1, (si - lo) / (hi - lo))) * seg
+  }
+  const bars = zones.map((z) => '<div style="flex:1;background:' + z.color + '"></div>').join('')
+  const ticks = zones.slice(0, -1).map((z, i) => '<span style="position:absolute;left:' + (i + 1) * seg + '%;transform:translateX(-50%)">' + z.max + '</span>').join('')
+  const marker = pos === null ? '' : '<div style="position:absolute;left:' + pos + '%;top:-6px;width:4px;height:26px;margin-left:-2px;background:#fff;border-radius:2px;box-shadow:0 0 0 1px #000"></div>'
+  return '<div style="position:relative;margin:14px 0 4px"><div style="display:flex;height:14px;border-radius:7px;overflow:hidden">' + bars + '</div>' + marker + '</div>' +
+    '<div class="muted" style="position:relative;height:18px;font-size:12px">' + ticks + '</div>'
+}
+
 // ---------- Главная ----------
 
 function renderHome() {
@@ -39,8 +65,9 @@ function renderHome() {
     $('last').hidden = false
     $('last').innerHTML =
       '<div class="muted">Последний замер · ' + fmtDate(last.date) + '</div>' +
-      '<div style="font-size:28px;font-weight:700">ИН ' + (last.si ?? '—') + '</div>' +
-      '<div>' + last.zone + ' · пульс ' + (last.hr ?? '—') + '</div>' +
+      '<div style="font-size:28px;font-weight:700;color:' + (zoneFor(last.si) || { color: '#eee' }).color + '">ИН ' + (last.si ?? '—') + '</div>' +
+      '<div>' + (zoneFor(last.si) || { label: '—' }).label + ' · пульс ' + (last.hr ?? '—') + '</div>' +
+      scaleHtml(last.si) +
       '<div class="' + qClass(last.quality) + '">Качество: ' + qualityLabel(last.quality) + '</div>'
   } else $('last').hidden = true
   if (!CameraRecorder.supported()) {
@@ -169,8 +196,11 @@ function drawHistogram(hist) {
 }
 
 function renderResult(r) {
+  const z = zoneFor(r.si)
   $('r-si').textContent = r.si ?? '—'
-  $('r-zone').textContent = r.zone
+  $('r-si').style.color = z ? z.color : '#eee'
+  $('r-zone').innerHTML = (z ? z.label : '—') + scaleHtml(r.si) +
+    '<div class="muted" style="font-size:12px">Норма 80–150 — по методичке Баевского (2001). Остальные границы — ориентиры приложения.</div>'
   $('r-quality').innerHTML = '<span class="' + qClass(r.quality) + '">Качество замера: ' + qualityLabel(r.quality) + '</span>'
   const recent = loadHistory().filter((h) => h.quality !== 'bad' && h.si !== null && h.date !== r.date && Date.now() - new Date(h.date) < APP.TREND_DAYS * 864e5)
   $('r-compare').textContent = recent.length
@@ -201,7 +231,7 @@ function renderHistory() {
     : 'Замеров пока нет.'
   $('h-table').innerHTML =
     '<tr><th>Дата</th><th class="num">ИН</th><th class="num">Пульс</th><th>Качество</th></tr>' +
-    list.map((h) => '<tr><td>' + fmtDate(h.date) + '</td><td class="num">' + (h.si ?? '—') + '</td><td class="num">' + (h.hr ?? '—') + '</td><td class="' + qClass(h.quality) + '">' + qualityLabel(h.quality).split(' ')[0] + '</td></tr>').join('')
+    list.map((h) => '<tr><td>' + fmtDate(h.date) + '</td><td class="num">' + dot(h.si) + (h.si ?? '—') + '</td><td class="num">' + (h.hr ?? '—') + '</td><td class="' + qClass(h.quality) + '">' + qualityLabel(h.quality).split(' ')[0] + '</td></tr>').join('')
 }
 
 function download(file) {

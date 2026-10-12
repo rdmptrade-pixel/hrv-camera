@@ -22,7 +22,8 @@ assert.equal(b.mo, 0.825)
 assert.equal(b.amo, 50)
 assert.equal(Math.round(b.mxdmn * 1000), 100)
 assert.equal(Math.round(b.si), 303)
-assert.equal(b.zone, 'напряжение')
+assert.equal(b.zone, 'выраженное напряжение')
+assert.equal(baevsky([...Array(40).fill(760), ...Array(30).fill(810), ...Array(30).fill(710), 650, 910]).zoneKey, 'norm') // ИН ≈ 97
 console.log('— формула Баевского: ИН', Math.round(b.si), '(ожидалось 303) ✓')
 
 // 2. Искусственная запись как с телефона: 5 мин, ~29 кадров/с, основная волна + вторая (дикротическая),
