@@ -1,1 +1,1 @@
-{"name":"hrv-camera","private":true,"type":"module","scripts":{"test":"node tools/test-signal.mjs"}}
+{"name":"hrv-camera","private":true,"type":"module","scripts":{"test":"node tools/test-signal.mjs && node tools/test-offline.mjs"}}
