@@ -3,6 +3,7 @@ import { BeatDetector, median, meanSd } from '../lib/signal.js'
 
 const PROBE = {
   DURATION_MS: 60 * 1000, // длительность проверки
+  RECORD_MS: 5 * 60 * 1000, // длительность записи для настройки обработки
   SAMPLE_W: 32, // кадр уменьшаем до 32×24 — для средней яркости этого достаточно
   SAMPLE_H: 24,
   FINGER_MIN_RED: 100, // палец на камере со вспышкой: красный канал яркий…
@@ -33,6 +34,9 @@ let beats = []
 let timeSource = ''
 let wakeLock = null
 let info = {}
+let durationMs = PROBE.DURATION_MS
+let raw = [] // сырой сигнал: [время кадра, красный, зелёный] — для настройки обработки на сервере
+let recordFile = null
 
 function setStatus(html) {
   $('status').innerHTML = html
@@ -148,12 +152,13 @@ function onFrame(now, meta, id) {
   const finger = r >= PROBE.FINGER_MIN_RED && r >= PROBE.FINGER_RED_TO_GREEN * g
   if (finger) fingerFrames++
   frameTimes.push(t)
+  raw.push([Math.round(t * 100) / 100, Math.round(r * 100) / 100, Math.round(g * 100) / 100])
   const beat = detector.push(t, r)
   if (beat !== null && finger) beats.push(beat)
 
   drawWave()
   const elapsed = performance.now() - startedAt
-  const left = Math.max(0, Math.ceil((PROBE.DURATION_MS - elapsed) / 1000))
+  const left = Math.max(0, Math.ceil((durationMs - elapsed) / 1000))
   const rr = beats.slice(-11).map((b, i, a) => (i ? b - a[i - 1] : null)).filter((v) => v !== null)
   const hr = rr.length >= 3 ? Math.round(60000 / median(rr)) : '—'
   setStatus(
@@ -161,7 +166,7 @@ function onFrame(now, meta, id) {
       '<br>Пульс: ' + hr + ' · осталось ' + left + ' с'
   )
 
-  if (elapsed >= PROBE.DURATION_MS) finish()
+  if (elapsed >= durationMs) finish()
   else video.requestVideoFrameCallback((n, m) => onFrame(n, m, id))
 }
 
@@ -206,14 +211,22 @@ function finish() {
   if (stream) stream.getTracks().forEach((t) => t.stop())
   if (wakeLock) wakeLock.release().catch(() => {})
   $('stats').textContent = summary()
+  // Файл записи: сырой сигнал и сведения о камере — для разбора на сервере
+  const data = { version: 1, recordedAt: new Date().toISOString(), durationMs, info, userAgent: navigator.userAgent, columns: ['t_ms', 'red', 'green'], frames: raw }
+  const name = 'pulse-' + new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-') + '.json'
+  recordFile = new File([JSON.stringify(data)], name, { type: 'application/json' })
+  $('save').hidden = false
   setStatus('Готово. Сделайте скриншот результата ниже.')
   $('start').disabled = false
-  $('start').textContent = 'Ещё раз'
+  $('record').disabled = false
   if (navigator.vibrate) navigator.vibrate(300)
 }
 
-async function start(deviceId) {
+async function start(deviceId, ms = PROBE.DURATION_MS) {
+  durationMs = ms
   $('start').disabled = true
+  $('record').disabled = true
+  $('save').hidden = true
   $('stats').textContent = ''
   try {
     const id = await openCamera(deviceId)
@@ -221,11 +234,13 @@ async function start(deviceId) {
   } catch (e) {
     setStatus('<span class="bad">Камера не открылась: ' + e.name + '</span><br>Разрешите доступ к камере в настройках сайта.')
     $('start').disabled = false
+    $('record').disabled = false
     return
   }
   if (!('requestVideoFrameCallback' in HTMLVideoElement.prototype)) {
     setStatus('<span class="bad">Браузер не поддерживает покадровую обработку. Откройте страницу в Chrome.</span>')
     $('start').disabled = false
+    $('record').disabled = false
     return
   }
   try {
@@ -237,14 +252,41 @@ async function start(deviceId) {
   frameTimes = []
   fingerFrames = 0
   beats = []
+  raw = []
   running = true
   startedAt = performance.now()
   const id = ++session
   video.requestVideoFrameCallback((n, m) => onFrame(n, m, id))
 }
 
-$('start').addEventListener('click', () => start($('camera').disabled ? null : $('camera').value))
+const chosenCamera = () => ($('camera').disabled ? null : $('camera').value)
+$('start').addEventListener('click', () => start(chosenCamera(), PROBE.DURATION_MS))
+$('record').addEventListener('click', () => start(chosenCamera(), PROBE.RECORD_MS))
 $('camera').addEventListener('change', () => {
   running = false
-  start($('camera').value)
+  start($('camera').value, durationMs)
+})
+
+// Отправить файл через меню «Поделиться» Android (Google Диск, почта, мессенджеры)
+$('share').addEventListener('click', async () => {
+  if (!recordFile) return
+  if (navigator.canShare && navigator.canShare({ files: [recordFile] })) {
+    try {
+      await navigator.share({ files: [recordFile], title: recordFile.name })
+    } catch (e) {
+      // пользователь закрыл меню — ничего не делаем
+    }
+  } else {
+    alert('Телефон не умеет отправлять файл отсюда — нажмите «Скачать файл записи».')
+  }
+})
+
+// Скачать файл в «Загрузки»
+$('download').addEventListener('click', () => {
+  if (!recordFile) return
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(recordFile)
+  a.download = recordFile.name
+  a.click()
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000)
 })
