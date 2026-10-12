@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Проверка камеры</title>
+  <style>
+    :root { --bg: #111; --fg: #eee; --muted: #999; --accent: #e53935; --ok: #43a047; --warn: #fb8c00; }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 16px/1.4 system-ui, sans-serif; }
+    h1 { font-size: 22px; margin: 0 0 8px; }
+    p { margin: 8px 0; }
+    .muted { color: var(--muted); font-size: 14px; }
+    button { width: 100%; padding: 16px; margin: 8px 0; font-size: 18px; border: 0; border-radius: 12px; background: var(--accent); color: #fff; }
+    button:disabled { opacity: .5; }
+    select { width: 100%; padding: 10px; font-size: 15px; margin: 4px 0 8px; background: #222; color: var(--fg); border: 1px solid #444; border-radius: 8px; }
+    canvas { width: 100%; height: 140px; background: #000; border-radius: 8px; display: block; }
+    #status { font-size: 20px; margin: 12px 0; min-height: 56px; }
+    #stats { white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 14px; background: #1b1b1b; padding: 10px; border-radius: 8px; }
+    .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--accent); }
+    video { display: none; }
+  </style>
+</head>
+<body>
+  <h1>Проверка камеры для замера пульса</h1>
+  <p class="muted">Минута проверки: подходит ли телефон для замера вариабельности пульса через камеру. Ничего никуда не отправляется.</p>
+  <p>1. Нажмите «Старт», разрешите доступ к камере.<br>2. Положите подушечку указательного пальца на заднюю камеру так, чтобы палец закрыл и объектив, и вспышку. Не давите сильно.<br>3. Сидите спокойно минуту.</p>
+  <button id="start">Старт</button>
+  <label class="muted" for="camera">Камера (если вспышка не загорелась — выберите другую):</label>
+  <select id="camera" disabled><option>— появится после старта —</option></select>
+  <div id="status">Нажмите «Старт»</div>
+  <canvas id="wave" width="600" height="140"></canvas>
+  <p class="muted">Пульсовая волна: должны быть ровные одинаковые зубцы, по одному на удар сердца.</p>
+  <div id="stats"></div>
+  <video id="video" playsinline muted></video>
+  <script type="module" src="probe.js"></script>
+</body>
+</html>
