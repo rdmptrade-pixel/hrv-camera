@@ -4,6 +4,7 @@ import { BeatDetector, median } from './lib/signal.js'
 import { buildResult, qualityLabel } from './lib/result.js'
 import { loadHistory, saveToHistory, clearHistory, toCsv } from './lib/history.js'
 import { BAEVSKY } from './lib/baevsky.js'
+import { RISK } from './lib/risk.js'
 
 const APP = {
   MEASURE_MS: 5 * 60 * 1000, // длительность замера — как требует метод
@@ -56,6 +57,102 @@ function scaleHtml(si) {
     '<div class="muted" style="position:relative;height:18px;font-size:12px">' + ticks + '</div>'
 }
 
+// ---------- Адаптационный риск ----------
+
+const riskZone = (cat) => RISK.ZONES.find((z) => cat <= z.max)
+
+// Лестница 1–10 со светофором, текущая категория выделена
+function ladderHtml(cat) {
+  return '<div style="display:flex;gap:3px;margin:10px 0 4px">' +
+    Array.from({ length: 10 }, (_, i) => {
+      const z = riskZone(i + 1)
+      const on = i + 1 === cat
+      return '<div style="flex:1;text-align:center;padding:6px 0;border-radius:6px;font-weight:700;background:' + z.color +
+        ';opacity:' + (on ? 1 : 0.28) + ';color:#111;' + (on ? 'outline:3px solid #fff' : '') + '">' + (i + 1) + '</div>'
+    }).join('') + '</div>'
+}
+
+// Полоса вероятностей четырёх состояний
+function probsHtml(four) {
+  const parts = [['норма', '#43a047'], ['донозологическое', '#fdd835'], ['преморбидное', '#fb8c00'], ['срыв адаптации', '#e53935']]
+  const bar = parts.map(([, c], i) => (four[i] ? '<div style="width:' + four[i] + '%;background:' + c + '"></div>' : '')).join('')
+  const legend = parts.map(([n, c], i) => '<span style="margin-right:10px;white-space:nowrap"><span style="display:inline-block;width:9px;height:9px;background:' + c + ';margin-right:4px"></span>' + n + ' ' + four[i] + '%</span>').join('')
+  return '<div style="display:flex;height:12px;border-radius:6px;overflow:hidden;margin:10px 0 6px">' + bar + '</div><div class="muted" style="font-size:13px">' + legend + '</div>'
+}
+
+function riskHtml(r) {
+  if (!r.risk) return '<div class="muted">Адаптационный риск для этого замера не посчитан (замер сделан до обновления или в нём мало данных).</div>'
+  const k = r.risk
+  const z = riskZone(k.category)
+  return '<div class="muted">Категория адаптационного риска (модель Баевского)</div>' +
+    '<div style="display:flex;align-items:baseline;gap:10px"><span class="big" style="color:' + z.color + '">' + k.category + '</span><span class="muted">из 10</span></div>' +
+    '<div class="zone">' + z.label + ' — ' + z.advice + '</div>' +
+    ladderHtml(k.category) + probsHtml(k.four) +
+    '<div style="margin-top:8px">Тип регуляции: <b>' + k.type + '</b> <span class="muted">(' + k.typeProb + ' %)</span></div>' +
+    '<div class="muted" style="font-size:13px">Функциональные резервы (ФР) ' + k.fr + ', степень напряжения (СН) ' + k.sn + '</div>' +
+    '<div class="muted" style="font-size:12px;margin-top:8px">По книге Баевского и Черниковой (гл. 3.2, с. 105–116) и патенту RU 2448644. Выбор категории по вероятностям — прочтение рис. 3.12 приложением. ' +
+    'Внимание: шум камеры завышает pNN50 и долю дыхательных волн, поэтому оценка может быть мягче, чем по кардиограмме. Модель построена на людях 30–70 лет. Это не диагноз.</div>'
+}
+
+// Плоскость «ФР — СН» с четырьмя зонами и траекторией замеров
+function drawPhase(canvas, list) {
+  const ctx = canvas.getContext('2d')
+  const W = canvas.width
+  const H = canvas.height
+  const X = [-6, 4]
+  const Y = [-3, 1.5]
+  const px = (fr) => ((Math.max(X[0], Math.min(X[1], fr)) - X[0]) / (X[1] - X[0])) * W
+  const py = (sn) => H - ((Math.max(Y[0], Math.min(Y[1], sn)) - Y[0]) / (Y[1] - Y[0])) * H
+  ctx.fillStyle = '#000'
+  ctx.fillRect(0, 0, W, H)
+  const quad = [
+    [0, 4, -3, 0, 'rgba(67,160,71,.22)', 'норма'],
+    [0, 4, 0, 1.5, 'rgba(253,216,53,.18)', 'донозологические'],
+    [-6, 0, 0, 1.5, 'rgba(251,140,0,.2)', 'преморбидные'],
+    [-6, 0, -3, 0, 'rgba(229,57,53,.2)', 'патологические'],
+  ]
+  ctx.font = '18px system-ui'
+  for (const [x0, x1, y0, y1, c, label] of quad) {
+    ctx.fillStyle = c
+    ctx.fillRect(px(x0), py(y1), px(x1) - px(x0), py(y0) - py(y1))
+    ctx.fillStyle = '#aaa'
+    ctx.fillText(label, px(x0) + 8, y1 > 0 ? py(y1) + 22 : py(y0) - 10)
+  }
+  ctx.strokeStyle = '#666'
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.moveTo(px(0), 0)
+  ctx.lineTo(px(0), H)
+  ctx.moveTo(0, py(0))
+  ctx.lineTo(W, py(0))
+  ctx.stroke()
+  ctx.fillStyle = '#888'
+  ctx.font = '15px system-ui'
+  ctx.fillText('ФР — резервы →', W - 130, py(0) - 6)
+  ctx.fillText('↑ СН — напряжение', px(0) + 6, 16)
+  const pts = list.filter((h) => h.risk && h.quality !== 'bad')
+  if (!pts.length) return
+  ctx.strokeStyle = 'rgba(255,255,255,.35)'
+  ctx.lineWidth = 2
+  ctx.beginPath()
+  pts.forEach((h, i) => (i ? ctx.lineTo(px(h.risk.fr), py(h.risk.sn)) : ctx.moveTo(px(h.risk.fr), py(h.risk.sn))))
+  ctx.stroke()
+  pts.forEach((h, i) => {
+    const last = i === pts.length - 1
+    ctx.globalAlpha = last ? 1 : 0.35 + (0.5 * i) / pts.length
+    ctx.fillStyle = riskZone(h.risk.category).color
+    ctx.beginPath()
+    ctx.arc(px(h.risk.fr), py(h.risk.sn), last ? 10 : 6, 0, 2 * Math.PI)
+    ctx.fill()
+    if (last) {
+      ctx.strokeStyle = '#fff'
+      ctx.lineWidth = 3
+      ctx.stroke()
+    }
+  })
+  ctx.globalAlpha = 1
+}
+
 // ---------- Главная ----------
 
 function renderHome() {
@@ -68,6 +165,7 @@ function renderHome() {
       '<div style="font-size:28px;font-weight:700;color:' + (zoneFor(last.si) || { color: '#eee' }).color + '">ИН ' + (last.si ?? '—') + '</div>' +
       '<div>' + (zoneFor(last.si) || { label: '—' }).label + ' · пульс ' + (last.hr ?? '—') + '</div>' +
       scaleHtml(last.si) +
+      (last.risk ? '<div>Адаптационный риск: <b style="color:' + riskZone(last.risk.category).color + '">' + last.risk.category + ' из 10</b> — ' + riskZone(last.risk.category).label + '</div>' + ladderHtml(last.risk.category) : '') +
       '<div class="' + qClass(last.quality) + '">Качество: ' + qualityLabel(last.quality) + '</div>'
   } else $('last').hidden = true
   if (!CameraRecorder.supported()) {
@@ -206,6 +304,8 @@ function renderResult(r) {
   $('r-compare').textContent = recent.length
     ? 'Средний ИН за ' + APP.TREND_DAYS + ' дней: ' + Math.round(recent.reduce((a, h) => a + h.si, 0) / recent.length) + ' (замеров: ' + recent.length + ')'
     : 'Для сравнения пока мало замеров. Смотрите на тенденцию за несколько дней, а не на один замер.'
+  $('r-risk').innerHTML = riskHtml(r)
+  drawPhase($('phase'), loadHistory())
   const cell = (label, value) => '<div><span>' + label + '</span>' + value + '</div>'
   $('r-grid').innerHTML =
     cell('Пульс', r.hr ?? '—') +
@@ -215,6 +315,9 @@ function renderResult(r) {
     cell('MxDMn — размах', (r.mxdmn ?? '—') + ' с') +
     cell('SDNN', (r.sdnn ?? '—') + ' мс') +
     cell('RMSSD', (r.rmssd ?? '—') + ' мс') +
+    cell('pNN50', (r.pnn50 ?? '—') + ' %') +
+    cell('CV — коэффициент вариации', (r.cv ?? '—') + ' %') +
+    cell('Спектр VLF / LF / HF', (r.vlfPct ?? '—') + ' / ' + (r.lfPct ?? '—') + ' / ' + (r.hfPct ?? '—') + ' %') +
     cell('Годных кадров', r.goodFrames + ' %')
   drawHistogram(r.histogram)
 }
@@ -230,8 +333,9 @@ function renderHistory() {
       '<div class="muted">Плохие по качеству замеры в среднее не входят.</div>'
     : 'Замеров пока нет.'
   $('h-table').innerHTML =
-    '<tr><th>Дата</th><th class="num">ИН</th><th class="num">Пульс</th><th>Качество</th></tr>' +
-    list.map((h) => '<tr><td>' + fmtDate(h.date) + '</td><td class="num">' + dot(h.si) + (h.si ?? '—') + '</td><td class="num">' + (h.hr ?? '—') + '</td><td class="' + qClass(h.quality) + '">' + qualityLabel(h.quality).split(' ')[0] + '</td></tr>').join('')
+    '<tr><th>Дата</th><th class="num">Риск</th><th class="num">ИН</th><th class="num">Пульс</th><th>Качество</th></tr>' +
+    list.map((h) => '<tr><td>' + fmtDate(h.date) + '</td><td class="num">' + (h.risk ? '<b style="color:' + riskZone(h.risk.category).color + '">' + h.risk.category + '</b>' : '—') + '</td><td class="num">' + dot(h.si) + (h.si ?? '—') + '</td><td class="num">' + (h.hr ?? '—') + '</td><td class="' + qClass(h.quality) + '">' + qualityLabel(h.quality).split(' ')[0] + '</td></tr>').join('')
+  drawPhase($('h-phase'), loadHistory())
 }
 
 function download(file) {

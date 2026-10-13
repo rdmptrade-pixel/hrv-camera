@@ -81,6 +81,10 @@
       <div id="r-quality" style="margin-top:8px"></div>
       <div class="muted" id="r-compare" style="margin-top:6px"></div>
     </div>
+    <div class="card" id="r-risk"></div>
+    <h2>Резервы и напряжение</h2>
+    <canvas id="phase" width="600" height="380"></canvas>
+    <p class="muted">Точка — этот замер, линия — предыдущие. Справа внизу норма, справа вверху донозологические состояния, слева вверху преморбидные, слева внизу патологические (по книге, рис. 3.11).</p>
     <div class="card grid" id="r-grid"></div>
     <h2>Распределение интервалов</h2>
     <canvas id="hist" width="600" height="160"></canvas>
@@ -93,6 +97,8 @@
   <section id="history" hidden>
     <h1>История</h1>
     <div class="card" id="h-summary"></div>
+    <canvas id="h-phase" width="600" height="380"></canvas>
+    <p class="muted">Ваш путь по замерам: от бледных точек (старые) к яркой (последний). Цвет точки — категория риска.</p>
     <div class="card" style="overflow-x:auto"><table id="h-table"></table></div>
     <button class="secondary" id="export">Выгрузить в CSV (Excel)</button>
     <button class="secondary" id="clear">Очистить историю</button>
