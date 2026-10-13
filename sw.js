@@ -1,6 +1,6 @@
 // Работа без интернета: отдаём файлы из сохранённой копии, а при наличии сети тихо обновляем её.
 // При изменении состава файлов — поднять номер версии.
-const CACHE = 'hrv-camera-v3'
+const CACHE = 'hrv-camera-v4'
 const FILES = [
   './',
   './index.html',
@@ -16,6 +16,7 @@ const FILES = [
   './lib/history.js',
   './lib/spectrum.js',
   './lib/risk.js',
+  './lib/noise.js',
 ]
 
 self.addEventListener('install', (e) => {

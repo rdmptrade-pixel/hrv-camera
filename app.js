@@ -10,6 +10,12 @@ const APP = {
   MEASURE_MS: 5 * 60 * 1000, // длительность замера — как требует метод
   WAVE_WINDOW_MS: 6000, // сколько секунд волны рисовать
   TREND_DAYS: 7, // средний индекс за последние дни — для сравнения
+  GROUP_MIN: 7, // группа риска — по среднему не меньше чем 7 хороших замеров…
+  GROUP_MAX: 14, // …и не больше чем 14 последних
+  TREND_RECENT: 3, // тенденция: 3 последних замера против предыдущих
+  SNR_GOOD: 12, // сила пульса относительно шума яркости: от 12 — хорошая
+  SNR_FAIR: 7, // 7–12 — средняя, ниже — слабая (точность ударов падает)
+  SNR_WINDOW_MS: 3000, // за сколько последних секунд оценивать силу пульса
 }
 
 const $ = (id) => document.getElementById(id)
@@ -27,6 +33,7 @@ let startedAt = 0
 let timer = null
 let wakeLock = null
 let lastFile = null
+let snrBuf = [] // последние секунды: время и яркость — для оценки силы пульса
 
 const fmtDate = (iso) =>
   new Date(iso).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
@@ -80,18 +87,46 @@ function probsHtml(four) {
   return '<div style="display:flex;height:12px;border-radius:6px;overflow:hidden;margin:10px 0 6px">' + bar + '</div><div class="muted" style="font-size:13px">' + legend + '</div>'
 }
 
+const NOISE_TEXT = { good: 'мало', fair: 'средне — показатели взяты с поправкой', bad: 'много — оценка ненадёжна, повторите замер с более лёгким нажимом' }
+
+function noiseHtml(r) {
+  if (r.noise === undefined || r.noise === null) return ''
+  const cls = r.noiseLevel === 'good' ? 'q-good' : r.noiseLevel === 'fair' ? 'q-fair' : 'q-bad'
+  return '<div class="' + cls + '" style="margin-top:6px">Шум камеры ±' + r.noise + ' мс — ' + NOISE_TEXT[r.noiseLevel] + '</div>'
+}
+
 function riskHtml(r) {
   if (!r.risk) return '<div class="muted">Адаптационный риск для этого замера не посчитан (замер сделан до обновления или в нём мало данных).</div>'
   const k = r.risk
   const z = riskZone(k.category)
-  return '<div class="muted">Категория адаптационного риска (модель Баевского)</div>' +
+  return '<div class="muted">Категория адаптационного риска сегодня (модель Баевского)</div>' +
     '<div style="display:flex;align-items:baseline;gap:10px"><span class="big" style="color:' + z.color + '">' + k.category + '</span><span class="muted">из 10</span></div>' +
     '<div class="zone">' + z.label + ' — ' + z.advice + '</div>' +
-    ladderHtml(k.category) + probsHtml(k.four) +
-    '<div style="margin-top:8px">Тип регуляции: <b>' + k.type + '</b> <span class="muted">(' + k.typeProb + ' %)</span></div>' +
-    '<div class="muted" style="font-size:13px">Функциональные резервы (ФР) ' + k.fr + ', степень напряжения (СН) ' + k.sn + '</div>' +
-    '<div class="muted" style="font-size:12px;margin-top:8px">По книге Баевского и Черниковой (гл. 3.2, с. 105–116) и патенту RU 2448644. Выбор категории по вероятностям — прочтение рис. 3.12 приложением. ' +
-    'Внимание: шум камеры завышает pNN50 и долю дыхательных волн, поэтому оценка может быть мягче, чем по кардиограмме. Модель построена на людях 30–70 лет. Это не диагноз.</div>'
+    ladderHtml(k.category) + probsHtml(k.four) + noiseHtml(r) +
+    '<div class="muted" style="font-size:13px;margin-top:6px">Функциональные резервы (ФР) ' + k.fr + ', степень напряжения (СН) ' + k.sn + '. У здоровых людей по кардиограмме в среднем ФР ≈ 2,3, СН ≈ −1,2…−1,6 (ИМБП, «Марс-500»).</div>' +
+    '<div class="muted" style="font-size:12px;margin-top:8px">Один замер показывает состояние на сегодня: у здоровых людей оно меняется от простуды, командировки, стресса. Свою группу риска смотрите по среднему за много замеров. ' +
+    'Источники: монография (гл. 3.2, Баевский, Черникова, с. 105–116), патенты RU 2448644 и RU 2586041. Выбор категории по вероятностям — правило приложения (осторожное, совпадает с примерами патента). ' +
+    'Камера намного менее точна, чем кардиограмма: показатели взяты с поправкой на её шум. Модель построена на людях 30–70 лет. Это не диагноз.</div>'
+}
+
+// Группа риска — по среднему категорий последних хороших замеров, со стрелкой тенденции
+function groupHtml(list) {
+  const ok = list.filter((h) => h.risk && h.quality !== 'bad' && h.noiseLevel !== 'bad')
+  if (ok.length < APP.GROUP_MIN) {
+    return '<div class="muted">Ваша группа риска появится после ' + APP.GROUP_MIN + ' хороших замеров (сейчас ' + ok.length + '). Лучше мерить каждый день утром.</div>'
+  }
+  const last = ok.slice(-APP.GROUP_MAX)
+  const cats = last.map((h) => h.risk.category)
+  const mean = cats.reduce((a, v) => a + v, 0) / cats.length
+  const cat = Math.min(10, Math.max(1, Math.round(mean + 1e-9)))
+  const z = riskZone(cat)
+  const recent = cats.slice(-APP.TREND_RECENT)
+  const before = cats.slice(0, -APP.TREND_RECENT)
+  const diff = recent.reduce((a, v) => a + v, 0) / recent.length - before.reduce((a, v) => a + v, 0) / before.length
+  const trend = diff >= 1 ? '<span class="q-bad">↑ риск растёт</span>' : diff <= -1 ? '<span class="q-good">↓ риск снижается</span>' : '<span class="muted">→ без заметных изменений</span>'
+  return '<div class="muted">Ваша группа риска (среднее за ' + cats.length + ' замеров)</div>' +
+    '<div style="font-size:24px;font-weight:700;color:' + z.color + '">' + cat + ' — ' + z.label + '</div>' +
+    '<div>' + trend + '</div>'
 }
 
 // Плоскость «ФР — СН» с четырьмя зонами и траекторией замеров
@@ -165,7 +200,9 @@ function renderHome() {
       '<div style="font-size:28px;font-weight:700;color:' + (zoneFor(last.si) || { color: '#eee' }).color + '">ИН ' + (last.si ?? '—') + '</div>' +
       '<div>' + (zoneFor(last.si) || { label: '—' }).label + ' · пульс ' + (last.hr ?? '—') + '</div>' +
       scaleHtml(last.si) +
-      (last.risk ? '<div>Адаптационный риск: <b style="color:' + riskZone(last.risk.category).color + '">' + last.risk.category + ' из 10</b> — ' + riskZone(last.risk.category).label + '</div>' + ladderHtml(last.risk.category) : '') +
+      (last.risk ? '<div>Адаптационный риск сегодня: <b style="color:' + riskZone(last.risk.category).color + '">' + last.risk.category + ' из 10</b> — ' + riskZone(last.risk.category).label + '</div>' + ladderHtml(last.risk.category) : '') +
+      noiseHtml(last) +
+      '<div style="margin-top:10px">' + groupHtml(list) + '</div>' +
       '<div class="' + qClass(last.quality) + '">Качество: ' + qualityLabel(last.quality) + '</div>'
   } else $('last').hidden = true
   if (!CameraRecorder.supported()) {
@@ -203,11 +240,35 @@ function drawWave() {
   ctx.stroke()
 }
 
+// Сила пульса: размах волны за последние секунды относительно шума яркости кадров
+function pulseStrength(t) {
+  while (snrBuf.length && t - snrBuf[0][0] > APP.SNR_WINDOW_MS) snrBuf.shift()
+  if (snrBuf.length < 30) return null
+  let s2 = 0
+  for (let i = 1; i < snrBuf.length - 1; i++) {
+    const r = snrBuf[i][1] - (snrBuf[i - 1][1] + snrBuf[i + 1][1]) / 2
+    s2 += r * r
+  }
+  const noise = Math.sqrt(s2 / (snrBuf.length - 2) / 1.5)
+  const { y } = detector.wave()
+  const recent = y.slice(-Math.round(snrBuf.length * 0.9))
+  const amp = Math.max(...recent) - Math.min(...recent)
+  return noise > 0 ? amp / noise : null
+}
+
 function onFrame(f) {
   frames.push([Math.round(f.t * 100) / 100, Math.round(f.r * 100) / 100, Math.round(f.g * 100) / 100])
+  snrBuf.push([f.t, f.r])
   const b = detector.push(f.t, f.r)
   if (b !== null && f.finger) liveBeats.push(b)
-  $('finger').innerHTML = f.finger ? '<span class="q-good">Палец на месте</span>' : '<span class="q-fair">Закройте пальцем камеру и вспышку</span>'
+  if (!f.finger) $('finger').innerHTML = '<span class="q-fair">Закройте пальцем камеру и вспышку</span>'
+  else {
+    const snr = pulseStrength(f.t)
+    $('finger').innerHTML = snr === null ? '<span class="q-good">Палец на месте</span>'
+      : snr >= APP.SNR_GOOD ? '<span class="q-good">Сила пульса хорошая (' + snr.toFixed(0) + ')</span>'
+      : snr >= APP.SNR_FAIR ? '<span class="q-fair">Сила пульса средняя (' + snr.toFixed(0) + ') — попробуйте нажимать ещё легче</span>'
+      : '<span class="q-bad">Пульс слабый (' + snr.toFixed(0) + ') — ослабьте нажим, палец лишь касается камеры</span>'
+  }
   drawWave()
 }
 
@@ -224,6 +285,7 @@ async function startMeasure(deviceId = null) {
   show('measure')
   frames = []
   liveBeats = []
+  snrBuf = []
   detector = new BeatDetector()
   try {
     const info = await recorder.start(onFrame, deviceId)
@@ -293,6 +355,9 @@ function drawHistogram(hist) {
   })
 }
 
+// Значение по камере без поправки на шум — мелко, для сравнения
+const rawNote = (r, key, unit) => (r.raw && r.raw[key] !== undefined && r.raw[key] !== null ? '<span style="display:inline;color:#888;font-size:12px"> (по камере ' + r.raw[key] + unit + ')</span>' : '')
+
 function renderResult(r) {
   const z = zoneFor(r.si)
   $('r-si').textContent = r.si ?? '—'
@@ -304,7 +369,7 @@ function renderResult(r) {
   $('r-compare').textContent = recent.length
     ? 'Средний ИН за ' + APP.TREND_DAYS + ' дней: ' + Math.round(recent.reduce((a, h) => a + h.si, 0) / recent.length) + ' (замеров: ' + recent.length + ')'
     : 'Для сравнения пока мало замеров. Смотрите на тенденцию за несколько дней, а не на один замер.'
-  $('r-risk').innerHTML = riskHtml(r)
+  $('r-risk').innerHTML = riskHtml(r) + '<div style="margin-top:12px">' + groupHtml(loadHistory()) + '</div>'
   drawPhase($('phase'), loadHistory())
   const cell = (label, value) => '<div><span>' + label + '</span>' + value + '</div>'
   $('r-grid').innerHTML =
@@ -313,12 +378,13 @@ function renderResult(r) {
     cell('Mo — самый частый интервал', (r.mo ?? '—') + ' с') +
     cell('AMo — его доля', (r.amo ?? '—') + ' %') +
     cell('MxDMn — размах', (r.mxdmn ?? '—') + ' с') +
-    cell('SDNN', (r.sdnn ?? '—') + ' мс') +
-    cell('RMSSD', (r.rmssd ?? '—') + ' мс') +
-    cell('pNN50', (r.pnn50 ?? '—') + ' %') +
+    cell('SDNN', (r.sdnn ?? '—') + ' мс' + rawNote(r, 'sdnn', ' мс')) +
+    cell('RMSSD', (r.rmssd ?? '—') + ' мс' + rawNote(r, 'rmssd', ' мс')) +
+    cell('pNN50', (r.pnn50 ?? '—') + ' %' + rawNote(r, 'pnn50', ' %')) +
     cell('CV — коэффициент вариации', (r.cv ?? '—') + ' %') +
     cell('Спектр VLF / LF / HF', (r.vlfPct ?? '—') + ' / ' + (r.lfPct ?? '—') + ' / ' + (r.hfPct ?? '—') + ' %') +
-    cell('Годных кадров', r.goodFrames + ' %')
+    cell('Годных кадров', r.goodFrames + ' %') +
+    cell('Сила пульса к шуму', r.snr ?? '—')
   drawHistogram(r.histogram)
 }
 

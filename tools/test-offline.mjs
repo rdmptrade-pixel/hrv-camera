@@ -77,7 +77,7 @@ const meanErr = errs.reduce((a, v) => a + v, 0) / errs.length
 console.log(`— запись со второй волной: ударов ${beats.length}, найдено ${res.beats.length}, принято ${(share * 100).toFixed(0)} %, ошибка интервала ср ${meanErr.toFixed(1)} мс`)
 assert.ok(Math.abs(res.beats.length - beats.length) <= 6, 'число ударов близко к настоящему')
 assert.ok(share >= 0.93, 'принято не меньше 93 % интервалов')
-assert.ok(meanErr <= 10, 'средняя ошибка интервала не больше 10 мс')
+assert.ok(meanErr <= 6, 'средняя ошибка интервала не больше 6 мс')
 
 // 3. Итог замера и качество
 const r = buildResult(frames, new Date('2026-10-12T08:00:00Z'))

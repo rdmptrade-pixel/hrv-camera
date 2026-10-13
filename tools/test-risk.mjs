@@ -3,38 +3,53 @@
 // Запуск: node tools/test-risk.mjs
 
 import assert from 'node:assert/strict'
-import { adaptationRisk, regulationType, pnn50, RISK } from '../lib/risk.js'
+import { adaptationRisk, riskCategory, pnn50 } from '../lib/risk.js'
+import { estimateNoise, correctedTimeDomain } from '../lib/noise.js'
 import { bandShares } from '../lib/spectrum.js'
 
-// Тип регуляции задаём напрямую (в таблице книги нет RMSSD/SDNN/CV)
-const withType = (i) => ({ ...RISK, TYPES: RISK.TYPES.map((t, k) => ({ ...t, c: k === i ? 1e6 : -1e6 })) })
 const GROUPS = [
-  // название, [ЧСС, ИН, pNN50, HF%], ожидаемое состояние, допустимые категории
-  ['норма', [75.4, 124.0, 12.24, 23.25], 'норма', [1, 2]],
-  ['донозологические', [82.4, 320.5, 1.88, 18.17], 'донозологическое', [2, 3, 4]],
-  ['преморбидные', [80.9, 636.7, 0.4, 19.01], 'преморбидное', [7, 8]],
-  ['патологические', [94.8, 1374.3, 0.57, 13.2], 'патологическое', [10]],
+  // название, [ЧСС, ИН, pNN50, HF%], ожидаемое состояние, ожидаемая категория
+  ['норма', [75.4, 124.0, 12.24, 23.25], 'норма', 1],
+  ['донозологические', [82.4, 320.5, 1.88, 18.17], 'донозологическое', 3],
+  ['преморбидные', [80.9, 636.7, 0.4, 19.01], 'преморбидное', 7],
+  ['патологические', [94.8, 1374.3, 0.57, 13.2], 'патологическое', 10],
 ]
-for (const [name, [hr, si, p, hf], state, cats] of GROUPS) {
-  for (const typeIdx of [1, 3]) {
-    const r = adaptationRisk({ hr, si, pnn50: p, hfPct: hf, rmssd: 30, sdnn: 30, cv: 5 }, withType(typeIdx))
-    assert.equal(r.topState, state, `${name}, тип ${typeIdx + 1}: состояние`)
-    assert.ok(cats.includes(r.category), `${name}, тип ${typeIdx + 1}: категория ${r.category}`)
-  }
-  console.log(`— группа «${name}» → ${state} ✓`)
+for (const [name, [hr, si, p, hf], state, cat] of GROUPS) {
+  const r = adaptationRisk({ hr, si, pnn50: p, hfPct: hf })
+  assert.equal(r.topState, state, name + ': состояние')
+  assert.equal(r.category, cat, name + ': категория')
+  console.log(`— группа «${name}» → ${state}, категория ${cat} ✓`)
 }
 
+// Примеры из патента RU 2586041: 0,78/0,22 → группа 1–2; 0,31/0,67 → группа 3–4
+assert.ok([1, 2].includes(riskCategory([0.78, 0.22, 0, 0])))
+assert.ok([3, 4].includes(riskCategory([0.31, 0.67, 0.02, 0])))
+console.log('— примеры патента RU 2586041 ✓')
+
 // ФР и СН по с. 114 на средних группы нормы: книга, рис. 3.11 — около (1,9; −0,35)
-const n = adaptationRisk({ hr: 75.4, si: 124, pnn50: 12.24, hfPct: 23.25, rmssd: 30, sdnn: 30, cv: 5 })
+const n = adaptationRisk({ hr: 75.4, si: 124, pnn50: 12.24, hfPct: 23.25 })
 assert.ok(Math.abs(n.fr - 1.87) < 0.01 && Math.abs(n.sn + 0.31) < 0.01)
 console.log('— ФР и СН нормы совпадают с рис. 3.11 ✓')
 
-// Тип регуляции. Числа согласованы между собой: CV = SDNN / средний интервал · 100.
-// Ваготония: пульс 50 (интервал 1200 мс), большая вариабельность, низкий ИН
-assert.equal(regulationType({ si: 30, rmssd: 90, sdnn: 90, cv: 7.5 }).key, 'I')
-// Симпатотония: пульс 100 (интервал 600 мс), малая вариабельность, высокий ИН
-assert.equal(regulationType({ si: 600, rmssd: 10, sdnn: 15, cv: 2.5 }).key, 'IV')
-console.log('— тип регуляции ✓')
+// Шум: к ровным «настоящим» интервалам с плавным колебанием добавляем шум времени удара ±15 мс —
+// оценка шума и поправленные RMSSD/pNN50 должны вернуться к настоящим
+{
+  let sd = 3
+  const rnd = () => { sd = (sd * 1103515245 + 12345) % 2147483648; return sd / 2147483648 }
+  const gauss = () => Math.sqrt(-2 * Math.log(rnd() + 1e-12)) * Math.cos(2 * Math.PI * rnd())
+  const beatsTrue = [0]
+  for (let i = 0; i < 400; i++) beatsTrue.push(beatsTrue[i] + 800 + 25 * Math.sin(i / 7))
+  const beatsNoisy = beatsTrue.map((b) => b + 15 * gauss())
+  const rrTrue = beatsTrue.slice(1).map((b, i) => b - beatsTrue[i])
+  const rr = beatsNoisy.slice(1).map((b, i) => b - beatsNoisy[i])
+  const kept = rr.map(() => true)
+  const nz = estimateNoise(rr, kept)
+  const rmssdTrue = Math.sqrt(rrTrue.slice(1).reduce((a, v, i) => a + (v - rrTrue[i]) ** 2, 0) / (rrTrue.length - 1))
+  const c = correctedTimeDomain(nz, 20)
+  assert.ok(Math.abs(nz.sigma - 15) < 3, 'шум ' + nz.sigma)
+  assert.ok(Math.abs(c.rmssd - rmssdTrue) < 8, 'RMSSD ' + c.rmssd + ' против ' + rmssdTrue)
+  console.log(`— шум ±15 мс оценён как ±${nz.sigma.toFixed(1)}; RMSSD по шумным ${Math.sqrt(nz.diffVar).toFixed(0)} → с поправкой ${c.rmssd.toFixed(0)} (настоящий ${rmssdTrue.toFixed(0)}) ✓`)
+}
 
 // pNN50: пары только из соседних принятых интервалов
 assert.equal(pnn50([800, 900, 800, 810], [true, true, true, true]), (2 / 3) * 100)
